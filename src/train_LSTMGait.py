@@ -1,0 +1,410 @@
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+from sklearn.model_selection import GroupShuffleSplit
+from sklearn.metrics import f1_score
+from tqdm import tqdm
+import gc
+import json
+import pandas as pd
+
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join('..')))
+
+from models.LSTMGait import LSTMGait, CNNBiLSTMGait
+from src.load_data_gait import load_trial
+
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+
+class LSTMGaitDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.from_numpy(X)
+        self.y = torch.from_numpy(y)
+
+    def __len__(self):
+        return self.X.shape[0]
+
+    def __getitem__(self, idx):
+
+        return self.X[idx], self.y[idx]  
+
+
+def compute_normalization(X):
+   X_reshaped = X.reshape(-1, X.shape[-1])
+   mean = X_reshaped.mean(axis=0)
+   std = X_reshaped.std(axis=0)
+
+   return mean, std
+
+
+def apply_normalization(X, mean, std):
+    return (X - mean) / (std + 1e-8)
+
+
+def normalize_per_window(X):
+    mean = X.mean(axis=1, keepdims=True)
+    std  = X.std(axis=1, keepdims=True) + 1e-8
+    return (X - mean) / std
+
+
+def training_loop(model, train_dl, val_dl, num_classes, epochs=100, lr=0.0005, patience=20):
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=patience//2)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    best_val_f1 = 0 
+    best_model_state = None
+    patience_counter = 0
+
+    epoch_bar = tqdm(range(epochs), desc="Training", leave=False)
+
+    for epoch in epoch_bar:
+        model.train()
+        train_loss = 0.0
+        train_total = 0
+
+        for x, y in train_dl:
+            x, y = x.to(device), y.to(device)
+
+            optimizer.zero_grad()
+            output = model(x)
+            loss = criterion(output.view(-1, num_classes), y.view(-1))
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            train_loss += loss.item() * y.numel()
+            train_total += y.numel()
+
+        model.eval()
+        val_preds_all = []
+        val_true_all = []
+
+        with torch.no_grad():
+            for x, y in val_dl:
+                x, y = x.to(device), y.to(device)
+
+                output = model(x)
+                
+                preds = output.argmax(dim=2).cpu().numpy().flatten()
+                true = y.cpu().numpy().flatten()
+
+                val_preds_all.extend(preds)
+                val_true_all.extend(true)
+
+        val_f1 = f1_score(val_true_all, val_preds_all, average='macro')
+        
+        scheduler.step(val_f1)
+
+        epoch_bar.set_postfix({
+            "Val F1": f"{val_f1:.3f}",
+            "LR": f"{optimizer.param_groups[0]['lr']:.6f}"
+        })
+
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            best_model_state = model.state_dict()
+            patience_counter = 0
+        else:
+            patience_counter += 1
+
+        if patience_counter >= patience:
+            epoch_bar.write(f"Early stopping in epoch {epoch}. Best F1: {best_val_f1:.4f}")
+            break
+
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+
+    return model, best_val_f1
+
+
+
+def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, patience=20, out_dir="checkpoints"):
+    np.random.seed(42)
+    torch.manual_seed(42)
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    num_channels = X.shape[-1]
+    num_classes  = len(np.unique(y))
+
+    unique_subjects = np.unique(subjects)
+    gss_test = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
+    trainval_subj_idx, test_subj_idx = next(gss_test.split(unique_subjects, groups=unique_subjects))
+
+    trainval_subjects = set(unique_subjects[trainval_subj_idx])
+    test_subjects     = set(unique_subjects[test_subj_idx])
+
+    trainval_mask = np.isin(subjects, list(trainval_subjects))
+    test_mask     = np.isin(subjects, list(test_subjects))
+
+    X_trainval, y_trainval = X[trainval_mask], y[trainval_mask]
+    X_test,     y_test     = X[test_mask],     y[test_mask]
+    subjects_trainval      = subjects[trainval_mask]
+
+    print(f"Subject split  →  train+val: {len(trainval_subjects)} subjects  |  test: {len(test_subjects)} subjects")
+    print(f"Window split   →  train+val: {X_trainval.shape[0]}  |  test: {X_test.shape[0]}")
+
+    unique_trainval_subjects = np.unique(subjects_trainval)
+    gss_val = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
+    train_subj_idx, val_subj_idx = next(gss_val.split(unique_trainval_subjects, groups=unique_trainval_subjects))
+
+    train_subjects = set(unique_trainval_subjects[train_subj_idx])
+    val_subjects   = set(unique_trainval_subjects[val_subj_idx])
+
+    train_mask = np.isin(subjects_trainval, list(train_subjects))
+    val_mask   = np.isin(subjects_trainval, list(val_subjects))
+
+    X_train, y_train = X_trainval[train_mask], y_trainval[train_mask]
+    X_val,   y_val   = X_trainval[val_mask],   y_trainval[val_mask]
+
+    print(f"               →  train: {len(train_subjects)} subjects ({X_train.shape[0]} windows)"
+          f"  |  val: {len(val_subjects)} subjects ({X_val.shape[0]} windows)")
+
+    if norm == "subj":
+        mean, std = compute_normalization(X_train)
+        X_train = apply_normalization(X_train, mean, std)
+        X_val   = apply_normalization(X_val,   mean, std)
+        X_test  = apply_normalization(X_test,  mean, std)
+    elif norm == "window":
+        mean, std = None, None
+        X_train = normalize_per_window(X_train)
+        X_val   = normalize_per_window(X_val)
+        X_test  = normalize_per_window(X_test)
+
+    g = torch.Generator()
+    g.manual_seed(42)
+    train_dl = DataLoader(LSTMGaitDataset(X_train, y_train), batch_size=128, shuffle=True,  generator=g)
+    val_dl   = DataLoader(LSTMGaitDataset(X_val,   y_val),   batch_size=128, shuffle=False)
+    test_dl  = DataLoader(LSTMGaitDataset(X_test,  y_test),  batch_size=128, shuffle=False)
+
+    if model_name.lower() == "lstm":
+        model = LSTMGait(num_channels, num_classes, hidden_size=128, num_layers=2, dropout_rate=0.25)
+    elif model_name.lower() == "cnnbilstm":
+        model = CNNBiLSTMGait(num_channels, num_classes, cnn_channels=64, kernel_size=5, hidden_size=128, num_layers=2, dropout_rate=0.25)
+    else:
+        raise ValueError(f"Unknown model_name: {model_name}")
+
+    trained_model, best_val_f1 = training_loop(model, train_dl, val_dl, num_classes, epochs=epochs, lr=lr, patience=patience)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    trained_model.eval()
+    test_preds, test_true = [], []
+    with torch.no_grad():
+        for x, yb in test_dl:
+            x = x.to(device)
+            preds = trained_model(x).argmax(dim=2).cpu().numpy().flatten()
+            test_preds.extend(preds)
+            test_true.extend(yb.numpy().flatten())
+
+    test_f1 = f1_score(test_true, test_preds, average='macro')
+    print(f"\nVal F1: {best_val_f1:.4f}  |  Test F1: {test_f1:.4f}")
+
+    ckpt_path = os.path.join(out_dir, "model.pt")
+    ckpt = {
+        'state_dict':       trained_model.state_dict(),
+        'model_name':       model_name,
+        'val_f1':           round(best_val_f1, 6),
+        'test_f1':          round(test_f1, 6),
+        'norm_type':        norm,
+        'num_channels':     num_channels,
+        'num_classes':      num_classes,
+        'train_subjects':   sorted(train_subjects),
+        'val_subjects':     sorted(val_subjects),
+        'test_subjects':    sorted(test_subjects),
+    }
+    if norm == "subj":
+        ckpt['norm_mean'] = mean
+        ckpt['norm_std']  = std
+
+    torch.save(ckpt, ckpt_path)
+
+    summary = {
+        'model_name':       model_name,
+        'norm':             norm,
+        'val_f1':           round(best_val_f1, 6),
+        'test_f1':          round(test_f1, 6),
+        'n_train_subjects': len(train_subjects),
+        'n_val_subjects':   len(val_subjects),
+        'n_test_subjects':  len(test_subjects),
+        'checkpoint':       ckpt_path,
+    }
+    with open(os.path.join(out_dir, "summary.json"), 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"Checkpoint saved → {ckpt_path}")
+
+    del train_dl, val_dl, test_dl
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return trained_model, best_val_f1, test_f1
+
+
+def load_model(subject=None, model_name=None, out_dir="checkpoints/processed"):
+    ckpt = torch.load(
+        os.path.join(out_dir, "model.pt"),
+        map_location='cpu',
+        weights_only=False
+    )
+    if model_name is None:
+        model_name = ckpt.get('model_name', 'lstm')
+
+    if model_name.lower() == "lstm":
+        model = LSTMGait(
+            ckpt['num_channels'],
+            ckpt['num_classes'],
+            hidden_size=128,
+            num_layers=2,
+            dropout_rate=0.25
+        )
+
+    elif model_name.lower() == "cnnbilstm":
+        model = CNNBiLSTMGait(
+            ckpt['num_channels'],
+            ckpt['num_classes'],
+            cnn_channels=64,
+            kernel_size=5,
+            hidden_size=128,
+            num_layers=2,
+            dropout_rate=0.25
+        )
+
+    model.load_state_dict(ckpt['state_dict'])
+    model.eval()
+
+    norm_mean = ckpt.get('norm_mean')
+    norm_std  = ckpt.get('norm_std')
+    norm_type = ckpt.get('norm_type', 'subj')
+
+    return model, norm_type, norm_mean, norm_std
+
+
+
+def predict_trial(base_path, trial_name, subject, model_name, process="preprocessed", sensors=None, window_size=100, stride=25, out_dir="checkpoints/processed"):
+
+    trial = load_trial(base_path, trial_name)
+    trial_metadata = trial['metadata']
+
+    deficit_side = {
+        "right": "RF",
+        "left": "LF",
+        None: "LF"
+    } 
+
+    no_deficit_side = {
+        "right": "LF",
+        "left": "RF",
+        None: "LF"
+    } 
+
+    if process == "preprocessed":
+        X_trial = trial['data_processed']
+        X_raw = pd.DataFrame(X_trial)
+    elif process == "raw":
+        X_trial = trial['data_raw']
+        if sensors is None:
+            X_raw = pd.concat([df.add_prefix(f"{sensor_key}_") for sensor_key, df in X_trial.items()], axis=1)
+        else:
+            if "affected" in sensors:
+                sensor_list = list(sensors)  
+                affected_side_sensor = trial_metadata['clinicalDeficitSide']
+                real_sensor = deficit_side[affected_side_sensor]
+
+                sensor_alias = {s: s for s in sensor_list}
+                sensor_alias[real_sensor] = "affected" 
+
+                sensor_list[sensor_list.index("affected")] = real_sensor
+
+                filtered_dfs = [
+                    df.add_prefix(f"{sensor_alias[sensor_key]}_")  
+                    for sensor_key, df in X_trial.items()
+                    if sensor_key in sensor_list
+                ]
+
+            elif "non_affected" in sensors:
+                sensor_list = list(sensors)  
+                affected_side_sensor = trial_metadata['clinicalDeficitSide']
+                real_sensor = no_deficit_side[affected_side_sensor]
+
+                sensor_alias = {s: s for s in sensor_list}
+                sensor_alias[real_sensor] = "non_affected" 
+
+                sensor_list[sensor_list.index("non_affected")] = real_sensor
+
+                filtered_dfs = [
+                    df.add_prefix(f"{sensor_alias[sensor_key]}_")  
+                    for sensor_key, df in X_trial.items()
+                    if sensor_key in sensor_list
+                ]
+
+            else:
+                filtered_dfs = [
+                    df.add_prefix(f"{sensor_key}_")
+                    for sensor_key, df in X_trial.items()
+                    if sensor_key in sensors
+                ]
+
+            X_raw = pd.concat(filtered_dfs, axis=1)
+
+    X_clean = (
+        X_raw
+        .drop(columns=[c for c in X_raw.columns if "PacketCounter" in c])
+        .dropna(how="any")
+        .to_numpy()
+    )
+    n_samples = X_clean.shape[0]
+
+    y_true = np.zeros(n_samples, dtype=np.int64)
+    for start, end in trial_metadata['leftGaitEvents']:
+        y_true[start:min(end, n_samples)] = 1
+    for start, end in trial_metadata['rightGaitEvents']:
+        y_true[start:min(end, n_samples)] = 2
+
+    model, norm_type, norm_mean, norm_std = load_model(subject, model_name, out_dir)
+
+    windows = []
+    window_starts = list(range(0, n_samples - window_size + 1, stride))
+    for start in window_starts:
+        windows.append(X_clean[start:start + window_size])
+    X_wins = np.stack(windows).astype(np.float32) 
+
+    if norm_type == "subj":
+        X_wins = apply_normalization(X_wins, norm_mean, norm_std)
+    elif norm_type == "window":
+        X_wins = normalize_per_window(X_wins)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+
+    with torch.no_grad():
+        output = model(torch.from_numpy(X_wins).to(device))
+        preds  = output.argmax(dim=2).cpu().numpy() 
+
+    num_classes = output.shape[2]
+    votes = np.zeros((n_samples, num_classes), dtype=np.int32)
+
+    for i, start in enumerate(window_starts):
+        for t in range(window_size):
+            votes[start + t, preds[i, t]] += 1
+
+    covered = votes.sum(axis=1) > 0
+    y_pred = np.zeros(n_samples, dtype=np.int64)
+    y_pred[covered] = votes[covered].argmax(axis=1)
+
+    last_valid = window_starts[-1] + window_size
+    if last_valid < n_samples:
+        y_pred[last_valid:] = y_pred[last_valid - 1]
+
+    return y_pred, y_true, X_clean
