@@ -274,7 +274,7 @@ def load_dataset_gait(base_path, process="raw", sensors=None, deriv=False, windo
                             X_raw = pd.concat(filtered_dfs, axis=1)
 
                     elif process == "free_raw":
-                        static_samples = 200  
+                        static_samples = 200 
                         X_trial = trial['data_raw']
 
                         sensor_list = list(sensors) if sensors is not None else ["HE", "LB", "RF", "LF"]
@@ -334,4 +334,3 @@ def load_dataset_gait(base_path, process="raw", sensors=None, deriv=False, windo
     groups = np.array(groups)
 
     return X_all, y_all, groups
-
