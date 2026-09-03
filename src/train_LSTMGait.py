@@ -128,7 +128,7 @@ def training_loop(model, train_dl, val_dl, num_classes, epochs=100, lr=0.0005, p
 
 
 
-def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, patience=20, out_dir="checkpoints"):
+def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, patience=20, dropout=0.25, cnn_channels=64, kernel_size=5, batch_size=128, out_dir="checkpoints"):
     np.random.seed(42)
     torch.manual_seed(42)
 
@@ -183,14 +183,14 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
 
     g = torch.Generator()
     g.manual_seed(42)
-    train_dl = DataLoader(LSTMGaitDataset(X_train, y_train), batch_size=128, shuffle=True,  generator=g)
-    val_dl   = DataLoader(LSTMGaitDataset(X_val,   y_val),   batch_size=128, shuffle=False)
-    test_dl  = DataLoader(LSTMGaitDataset(X_test,  y_test),  batch_size=128, shuffle=False)
+    train_dl = DataLoader(LSTMGaitDataset(X_train, y_train), batch_size=batch_size, shuffle=True,  generator=g)
+    val_dl   = DataLoader(LSTMGaitDataset(X_val,   y_val),   batch_size=batch_size, shuffle=False)
+    test_dl  = DataLoader(LSTMGaitDataset(X_test,  y_test),  batch_size=batch_size, shuffle=False)
 
     if model_name.lower() == "lstm":
-        model = LSTMGait(num_channels, num_classes, hidden_size=128, num_layers=2, dropout_rate=0.25)
+        model = LSTMGait(num_channels, num_classes, hidden_size=128, num_layers=2, dropout_rate=dropout)
     elif model_name.lower() == "cnnbilstm":
-        model = CNNBiLSTMGait(num_channels, num_classes, cnn_channels=64, kernel_size=5, hidden_size=128, num_layers=2, dropout_rate=0.25)
+        model = CNNBiLSTMGait(num_channels, num_classes, cnn_channels=cnn_channels, kernel_size=kernel_size, hidden_size=128, num_layers=2, dropout_rate=dropout)
     else:
         raise ValueError(f"Unknown model_name: {model_name}")
 
