@@ -52,6 +52,21 @@ def normalize_per_window(X):
     return (X - mean) / std
 
 
+def f1_by_group(preds_win, true_win, groups):
+    rows = []
+    for g in np.unique(groups):
+        mask = groups == g
+        p = preds_win[mask].reshape(-1)
+        t = true_win[mask].reshape(-1)
+        rows.append({
+            "subject": g,
+            "cohort": g.split("_")[0],
+            "f1": f1_score(t, p, average="macro"),
+            "n_windows": int(mask.sum()),
+        })
+    return pd.DataFrame(rows)
+
+
 def training_loop(model, train_dl, val_dl, num_classes, epochs=100, lr=0.0005, patience=20):
 
     criterion = nn.CrossEntropyLoss()
@@ -128,7 +143,7 @@ def training_loop(model, train_dl, val_dl, num_classes, epochs=100, lr=0.0005, p
 
 
 
-def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, patience=20, dropout=0.25, cnn_channels=64, kernel_size=5, batch_size=128, out_dir="checkpoints"):
+def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, patience=20, dropout=0.25, cnn_channels=64, kernel_size=5, batch_size=128, out_dir="checkpoints", plot=False):
     np.random.seed(42)
     torch.manual_seed(42)
 
@@ -150,6 +165,7 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
     X_trainval, y_trainval = X[trainval_mask], y[trainval_mask]
     X_test,     y_test     = X[test_mask],     y[test_mask]
     subjects_trainval      = subjects[trainval_mask]
+    subjects_test          = subjects[test_mask] 
 
     print(f"Subject split  →  train+val: {len(trainval_subjects)} subjects  |  test: {len(test_subjects)} subjects")
     print(f"Window split   →  train+val: {X_trainval.shape[0]}  |  test: {X_test.shape[0]}")
@@ -166,6 +182,7 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
 
     X_train, y_train = X_trainval[train_mask], y_trainval[train_mask]
     X_val,   y_val   = X_trainval[val_mask],   y_trainval[val_mask]
+    subjects_val      = subjects_trainval[val_mask]  
 
     print(f"               →  train: {len(train_subjects)} subjects ({X_train.shape[0]} windows)"
           f"  |  val: {len(val_subjects)} subjects ({X_val.shape[0]} windows)")
@@ -198,16 +215,43 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     trained_model.eval()
-    test_preds, test_true = [], []
-    with torch.no_grad():
-        for x, yb in test_dl:
-            x = x.to(device)
-            preds = trained_model(x).argmax(dim=2).cpu().numpy().flatten()
-            test_preds.extend(preds)
-            test_true.extend(yb.numpy().flatten())
 
-    test_f1 = f1_score(test_true, test_preds, average='macro')
-    print(f"\nVal F1: {best_val_f1:.4f}  |  Test F1: {test_f1:.4f}")
+    if plot:
+        val_preds_win, val_true_win = [], []
+        with torch.no_grad():
+            for x, yb in val_dl:
+                x = x.to(device)
+                preds = trained_model(x).argmax(dim=2).cpu().numpy()
+                val_preds_win.append(preds)
+                val_true_win.append(yb.numpy())
+        val_preds_win = np.concatenate(val_preds_win, axis=0)
+        val_true_win  = np.concatenate(val_true_win, axis=0)
+        df_val_f1 = f1_by_group(val_preds_win, val_true_win, subjects_val)
+
+        test_preds_win, test_true_win = [], []
+        with torch.no_grad():
+            for x, yb in test_dl:
+                x = x.to(device)
+                preds = trained_model(x).argmax(dim=2).cpu().numpy()
+                test_preds_win.append(preds)
+                test_true_win.append(yb.numpy())
+        test_preds_win = np.concatenate(test_preds_win, axis=0)
+        test_true_win  = np.concatenate(test_true_win, axis=0)
+        test_f1 = f1_score(test_true_win.reshape(-1), test_preds_win.reshape(-1), average='macro')
+        df_test_f1 = f1_by_group(test_preds_win, test_true_win, subjects_test)
+
+        print(f"\nVal F1: {best_val_f1:.4f}  |  Test F1: {test_f1:.4f}")
+    else:
+        test_preds, test_true = [], []
+        with torch.no_grad():
+            for x, yb in test_dl:
+                x = x.to(device)
+                preds = trained_model(x).argmax(dim=2).cpu().numpy().flatten()
+                test_preds.extend(preds)
+                test_true.extend(yb.numpy().flatten())
+
+        test_f1 = f1_score(test_true, test_preds, average='macro')
+        print(f"\nVal F1: {best_val_f1:.4f}  |  Test F1: {test_f1:.4f}")
 
     ckpt_path = os.path.join(out_dir, "model.pt")
     ckpt = {
@@ -247,8 +291,10 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-
-    return trained_model, best_val_f1, test_f1
+    if plot:
+        return trained_model, best_val_f1, test_f1, df_val_f1, df_test_f1
+    else:
+        return trained_model, best_val_f1, test_f1
 
 
 def load_model(subject=None, model_name=None, out_dir="checkpoints/processed"):

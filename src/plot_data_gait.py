@@ -361,3 +361,29 @@ def statistical_analysis(out_dir, model_name="", sensor=""):
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.show()
     print(f"\nFigure saved in: {plot_path}")
+
+
+def plot_f1_by_cohort(df, title="F1  by cohort", ax=None):
+    stats = (df.groupby("cohort")["f1"]
+                .agg(["mean", "std", "count"])
+                .sort_values("mean", ascending=False))
+    stats["std"] = stats["std"].fillna(0.0)  # cohortes con 1 solo sujeto
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 5))
+
+    x = np.arange(len(stats))
+    ax.bar(x, stats["mean"], yerr=stats["std"], capsize=4,
+        color="#4C72B0", alpha=0.85)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{c}\n(n={n})" for c, n in zip(stats.index, stats["count"])])
+    ax.set_ylabel("F1 macro")
+    ax.set_ylim(0, 1)
+    ax.set_title(title)
+    ax.grid(axis="y", alpha=0.3)
+
+    for xi, m in zip(x, stats["mean"]):
+        ax.text(xi, m + 0.02, f"{m:.3f}", ha="center", fontsize=9)
+
+    plt.tight_layout()
+    return stats
