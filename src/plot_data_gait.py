@@ -363,27 +363,42 @@ def statistical_analysis(out_dir, model_name="", sensor=""):
     print(f"\nFigure saved in: {plot_path}")
 
 
-def plot_f1_by_cohort(df, title="F1  by cohort", ax=None):
-    stats = (df.groupby("cohort")["f1"]
+def plot_f1_by_cohort(df, cohorts, title="F1  by cohort", ax=None):
+    stats = (df.groupby("Disease")["f1"]
                 .agg(["mean", "std", "count"])
                 .sort_values("mean", ascending=False))
-    stats["std"] = stats["std"].fillna(0.0)  # cohortes con 1 solo sujeto
+    stats["std"] = stats["std"].fillna(0.0)  
+    COLOR_MAP = {
+        'HS':   ('Healthy',        'lightgreen'),
+        'ACL':  ('Orthopaedic',    'lightcoral'),
+        'HOA':  ('Orthopaedic',    'lightcoral'),
+        'KOA':  ('Orthopaedic',    'lightcoral'),
+        'CIPN': ('Neurological',   'lightblue'),
+        'CVA':  ('Neurological',   'lightblue'),
+        'PD':   ('Neurological',   'lightblue'),
+        'RIL':  ('Neurological',   'lightblue'),
+    }
 
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
 
-    x = np.arange(len(stats))
-    ax.bar(x, stats["mean"], yerr=stats["std"], capsize=4,
-        color="#4C72B0", alpha=0.85)
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"{c}\n(n={n})" for c, n in zip(stats.index, stats["count"])])
-    ax.set_ylabel("F1 macro")
-    ax.set_ylim(0, 1)
-    ax.set_title(title)
-    ax.grid(axis="y", alpha=0.3)
+    seen_labels = set()
+    for disease, stats_row in stats.iterrows():
+        cohort, color = COLOR_MAP.get(disease, ('Other', 'gray'))
+        label = cohort if cohort not in seen_labels else "_nolegend_"
+        seen_labels.add(cohort)
 
-    for xi, m in zip(x, stats["mean"]):
-        ax.text(xi, m + 0.02, f"{m:.3f}", ha="center", fontsize=9)
+        scores = df[df['Disease'] == disease]['f1'].values
+        bar = ax.bar(disease, scores.mean(), yerr=scores.std(),
+                     capsize=5, color=color, alpha=0.8, label=label)
+        ax.bar_label(bar, fmt='%.3f', fontsize=8)
+
+    global_mean = df['f1'].mean()
+
+    ax.axhline(global_mean, color='black', linestyle='--', alpha=0.7, label=f'Global mean {global_mean:.3f}')
+    ax.set_ylim(0, 1); ax.set_ylabel('Mean Macro F1')
+    ax.set_title('By clinical cohort')
+    ax.legend(fontsize=9); ax.grid(axis='y', alpha=0.4)
 
     plt.tight_layout()
     return stats
