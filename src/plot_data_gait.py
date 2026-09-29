@@ -363,7 +363,7 @@ def statistical_analysis(out_dir, model_name="", sensor=""):
     print(f"\nFigure saved in: {plot_path}")
 
 
-def plot_f1_by_cohort(df, cohorts, title="F1  by cohort", ax=None):
+def plot_f1_by_cohort(df, title="F1  by cohort", ax=None):
     stats = (df.groupby("Disease")["f1"]
                 .agg(["mean", "std", "count"])
                 .sort_values("mean", ascending=False))
@@ -388,16 +388,18 @@ def plot_f1_by_cohort(df, cohorts, title="F1  by cohort", ax=None):
         label = cohort if cohort not in seen_labels else "_nolegend_"
         seen_labels.add(cohort)
 
+        n = stats_row['count']
+
         scores = df[df['Disease'] == disease]['f1'].values
-        bar = ax.bar(disease, scores.mean(), yerr=scores.std(),
+        bar = ax.bar(f'{disease}\n(n={n})', scores.mean(), yerr=scores.std(),
                      capsize=5, color=color, alpha=0.8, label=label)
         ax.bar_label(bar, fmt='%.3f', fontsize=8)
 
     global_mean = df['f1'].mean()
 
     ax.axhline(global_mean, color='black', linestyle='--', alpha=0.7, label=f'Global mean {global_mean:.3f}')
-    ax.set_ylim(0, 1); ax.set_ylabel('Mean Macro F1')
-    ax.set_title('By clinical cohort')
+    ax.set_ylim(0.6, 1.1); ax.set_ylabel('Mean Macro F1')
+    ax.set_title(title)
     ax.legend(fontsize=9); ax.grid(axis='y', alpha=0.4)
 
     plt.tight_layout()
