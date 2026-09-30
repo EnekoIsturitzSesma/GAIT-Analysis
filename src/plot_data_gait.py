@@ -388,7 +388,7 @@ def plot_f1_by_cohort(df, title="F1  by cohort", ax=None):
         label = cohort if cohort not in seen_labels else "_nolegend_"
         seen_labels.add(cohort)
 
-        n = stats_row['count']
+        n = int(stats_row['count'])
 
         scores = df[df['Disease'] == disease]['f1'].values
         bar = ax.bar(f'{disease}\n(n={n})', scores.mean(), yerr=scores.std(),
