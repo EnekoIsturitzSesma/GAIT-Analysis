@@ -11,6 +11,7 @@ import pandas as pd
 
 import sys
 import os
+import copy
 
 sys.path.append(os.path.abspath(os.path.join('..')))
 
@@ -127,7 +128,7 @@ def training_loop(model, train_dl, val_dl, num_classes, epochs=100, lr=0.0005, p
 
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
-            best_model_state = model.state_dict()
+            best_model_state = copy.deepcopy(model.state_dict())
             patience_counter = 0
         else:
             patience_counter += 1
@@ -143,7 +144,7 @@ def training_loop(model, train_dl, val_dl, num_classes, epochs=100, lr=0.0005, p
 
 
 
-def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, patience=20, dropout=0.25, cnn_channels=64, kernel_size=5, batch_size=128, out_dir="checkpoints", plot=False):
+def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, patience=20, dropout=0.25, cnn_channels=64, kernel_size=5, hidden_size=128, num_layers=2, batch_size=128, out_dir="checkpoints", plot=False):
     np.random.seed(42)
     torch.manual_seed(42)
 
@@ -205,9 +206,9 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
     test_dl  = DataLoader(LSTMGaitDataset(X_test,  y_test),  batch_size=batch_size, shuffle=False)
 
     if model_name.lower() == "lstm":
-        model = LSTMGait(num_channels, num_classes, hidden_size=128, num_layers=2, dropout_rate=dropout)
+        model = LSTMGait(num_channels, num_classes, hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout)
     elif model_name.lower() == "cnnbilstm":
-        model = CNNBiLSTMGait(num_channels, num_classes, cnn_channels=cnn_channels, kernel_size=kernel_size, hidden_size=128, num_layers=2, dropout_rate=dropout)
+        model = CNNBiLSTMGait(num_channels, num_classes, cnn_channels=cnn_channels, kernel_size=kernel_size, hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout)
     else:
         raise ValueError(f"Unknown model_name: {model_name}")
 
@@ -260,6 +261,10 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
         'val_f1':           round(best_val_f1, 6),
         'test_f1':          round(test_f1, 6),
         'norm_type':        norm,
+        'cnn_channels':     cnn_channels,
+        'kernel_size':      kernel_size,
+        'hidden_size':      hidden_size,
+        'num_layers':       num_layers,
         'num_channels':     num_channels,
         'num_classes':      num_classes,
         'train_subjects':   sorted(train_subjects),
@@ -280,6 +285,7 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
         'n_train_subjects': len(train_subjects),
         'n_val_subjects':   len(val_subjects),
         'n_test_subjects':  len(test_subjects),
+        'test_subjects':    sorted(str(s) for s in test_subjects),
         'checkpoint':       ckpt_path,
     }
     with open(os.path.join(out_dir, "summary.json"), 'w') as f:
@@ -310,8 +316,8 @@ def load_model(subject=None, model_name=None, out_dir="checkpoints/processed"):
         model = LSTMGait(
             ckpt['num_channels'],
             ckpt['num_classes'],
-            hidden_size=128,
-            num_layers=2,
+            hidden_size=ckpt['hidden_size'],
+            num_layers=ckpt['num_layers'],
             dropout_rate=0.25
         )
 
@@ -319,10 +325,10 @@ def load_model(subject=None, model_name=None, out_dir="checkpoints/processed"):
         model = CNNBiLSTMGait(
             ckpt['num_channels'],
             ckpt['num_classes'],
-            cnn_channels=64,
-            kernel_size=5,
-            hidden_size=128,
-            num_layers=2,
+            cnn_channels=ckpt['cnn_channels'],
+            kernel_size=ckpt['kernel_size'],
+            hidden_size=ckpt['hidden_size'],
+            num_layers=ckpt['num_layers'],
             dropout_rate=0.25
         )
 
@@ -403,12 +409,39 @@ def predict_trial(base_path, trial_name, subject, model_name, process="preproces
 
             X_raw = pd.concat(filtered_dfs, axis=1)
 
-    X_clean = (
+    elif process == "free_raw":
+        static_samples = 200
+        X_trial = trial['data_raw']
+
+        sensor_list = list(sensors) if sensors is not None else ["HE", "LB", "RF", "LF"]
+        if "affected" in sensor_list:
+            real = deficit_side[trial_metadata['clinicalDeficitSide']]
+            sensor_list = [real if s == "affected" else s for s in sensor_list]
+        elif "non_affected" in sensor_list:
+            real = no_deficit_side[trial_metadata['clinicalDeficitSide']]
+            sensor_list = [real if s == "non_affected" else s for s in sensor_list]
+
+        corrected_dfs = []
+        for sensor_key, df in X_trial.items():
+            if sensor_key not in sensor_list:
+                continue
+            df = df.copy()
+            acc_cols = [c for c in df.columns if c.startswith("Acc_")]
+            gravity = df[acc_cols].iloc[:static_samples].mean()
+            df[acc_cols] = df[acc_cols] - gravity
+            corrected_dfs.append(df.add_prefix(f"{sensor_key}_"))
+
+        X_raw = pd.concat(corrected_dfs, axis=1)
+
+    else:
+        raise ValueError(f"Unknown process: {process}")
+
+    X_clean_df = (
         X_raw
         .drop(columns=[c for c in X_raw.columns if "PacketCounter" in c])
         .dropna(how="any")
-        .to_numpy()
     )
+    X_clean = X_clean_df.to_numpy()
     n_samples = X_clean.shape[0]
 
     y_true = np.zeros(n_samples, dtype=np.int64)
@@ -453,4 +486,4 @@ def predict_trial(base_path, trial_name, subject, model_name, process="preproces
     if last_valid < n_samples:
         y_pred[last_valid:] = y_pred[last_valid - 1]
 
-    return y_pred, y_true, X_clean
+    return y_pred, y_true, X_clean_df
