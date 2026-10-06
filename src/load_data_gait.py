@@ -195,6 +195,27 @@ def add_derivatives(X):
     return np.concatenate([X, dX], axis=1)
 
 
+def fill_gaps(df):
+    pc = df["PacketCounter"].to_numpy().astype(np.int64)
+    pc = pc[0] + np.cumsum(np.r_[0, np.diff(pc) % 65536])     
+    out = df.drop(columns="PacketCounter").copy()
+    out.index = pc
+    out = out[~out.index.duplicated()].reindex(np.arange(pc[0], pc[-1] + 1))
+    return out.interpolate(limit_area="inside").bfill().ffill().reset_index(drop=True)
+
+
+def align_raw(raw_dict, n_proc):
+    out = {}
+    for k, df in raw_dict.items():
+        if len(df) == 0 or len(df) >= n_proc:      
+            out[k] = df
+            continue
+        f = fill_gaps(df)
+        if abs(len(f) - n_proc) > 1:
+            return None
+        out[k] = f
+    return out
+
 def load_dataset_gait(base_path, process="raw", sensors=None, deriv=False, window_size=100, stride=25):
 
     structure = load_bdd(base_path)
@@ -222,6 +243,11 @@ def load_dataset_gait(base_path, process="raw", sensors=None, deriv=False, windo
                 patient_path, trials = load_patient(base_path, subject) 
                 for trial_name in trials:
                     trial = load_trial(base_path, trial_name)
+                    if process in ("raw", "free_raw"):
+                        aligned = align_raw(trial['data_raw'], len(trial['data_processed']))
+                        if aligned is None:
+                            continue                                     
+                        trial['data_raw'] = aligned
                     trial_metadata = trial['metadata'] 
 
                     if process == "preprocessed":
