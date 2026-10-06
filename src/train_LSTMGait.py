@@ -16,7 +16,7 @@ import copy
 sys.path.append(os.path.abspath(os.path.join('..')))
 
 from models.LSTMGait import LSTMGait, CNNBiLSTMGait
-from src.load_data_gait import load_trial
+from src.load_data_gait import load_trial, align_raw
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -346,6 +346,11 @@ def load_model(subject=None, model_name=None, out_dir="checkpoints/processed"):
 def predict_trial(base_path, trial_name, subject, model_name, process="preprocessed", sensors=None, window_size=100, stride=25, out_dir="checkpoints/processed"):
 
     trial = load_trial(base_path, trial_name)
+    aligned = align_raw(trial['data_raw'], len(trial['data_processed']))
+    if process in ("raw", "free_raw"):
+        if aligned is None:
+            raise ValueError(f"No se pudo alinear el raw con el procesado en {trial_name}")                                     # en predict_trial: raise
+        trial['data_raw'] = aligned
     trial_metadata = trial['metadata']
 
     deficit_side = {
