@@ -21,6 +21,8 @@ from src.load_data_gait import load_trial, align_raw
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
+ALL = ["HE", "LB", "RF", "LF"]
+
 
 class LSTMGaitDataset(Dataset):
     def __init__(self, X, y):
@@ -343,11 +345,13 @@ def load_model(subject=None, model_name=None, out_dir="checkpoints/processed"):
 
 
 
-def predict_trial(base_path, trial_name, subject, model_name, process="preprocessed", sensors=None, window_size=100, stride=25, out_dir="checkpoints/processed"):
+def predict_trial(base_path, trial_name, subject, model_name, process="preprocessed", sensors=None, window_size=100, stride=25, max_pad=100, out_dir="checkpoints/processed"):
 
     trial = load_trial(base_path, trial_name)
-    aligned = align_raw(trial['data_raw'], len(trial['data_processed']))
     if process in ("raw", "free_raw"):
+        needed = ALL if (sensors is None or any(s not in ALL for s in sensors)) else list(sensors)
+        aligned = align_raw(trial['data_raw'], len(trial['data_processed']), needed, max_pad=max_pad)
+
         if aligned is None:
             raise ValueError(f"No se pudo alinear el raw con el procesado en {trial_name}")                                     # en predict_trial: raise
         trial['data_raw'] = aligned

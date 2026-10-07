@@ -4,6 +4,8 @@ import json
 import numpy as np
 
 
+ALL = ["HE", "LB", "RF", "LF"]
+
 def load_bdd(base_path):
     """
     Loads the complete structure of the database.
@@ -195,28 +197,36 @@ def add_derivatives(X):
     return np.concatenate([X, dX], axis=1)
 
 
-def fill_gaps(df):
+
+def _rel_counter(df, ref_pc):
     pc = df["PacketCounter"].to_numpy().astype(np.int64)
-    pc = pc[0] + np.cumsum(np.r_[0, np.diff(pc) % 65536])     
-    out = df.drop(columns="PacketCounter").copy()
-    out.index = pc
-    out = out[~out.index.duplicated()].reindex(np.arange(pc[0], pc[-1] + 1))
-    return out.interpolate(limit_area="inside").bfill().ffill().reset_index(drop=True)
+    start = int((pc[0] - ref_pc + 32768) % 65536 - 32768)          
+    return start + np.r_[0, np.cumsum(np.diff(pc) % 65536)]  
 
 
-def align_raw(raw_dict, n_proc):
-    out = {}
-    for k, df in raw_dict.items():
-        if len(df) == 0 or len(df) >= n_proc:      
-            out[k] = df
-            continue
-        f = fill_gaps(df)
-        if abs(len(f) - n_proc) > 1:
-            return None
-        out[k] = f
+def align_raw(raw_dict, n_proc, needed=ALL, max_pad=None):
+    ok = [k for k in raw_dict if len(raw_dict[k]) > 0]
+    if not any(len(raw_dict[k]) < n_proc for k in ok):             
+        return dict(raw_dict)
+    ref_pc = int(raw_dict[ok[0]]["PacketCounter"].iloc[0])
+    rel = {k: _rel_counter(raw_dict[k], ref_pc) for k in ok}
+    g0, g1 = min(r[0] for r in rel.values()), max(r[-1] for r in rel.values())
+    if abs((g1 - g0 + 1) - n_proc) > 1:                        
+        return None
+    if max_pad is not None and any((rel[k][0] - g0) + (g1 - rel[k][-1]) > max_pad for k in ok):
+        return None                                            
+    full = np.arange(g0, g1 + 1)
+    out = dict(raw_dict)
+    for k in needed:
+        if 0 < len(raw_dict[k]) < n_proc:
+            df = raw_dict[k].drop(columns="PacketCounter").copy()
+            df.index = rel[k]
+            df = df[~df.index.duplicated()].reindex(full)
+            out[k] = df.interpolate(limit_area="inside").bfill().ffill().reset_index(drop=True)
     return out
 
-def load_dataset_gait(base_path, process="raw", sensors=None, deriv=False, window_size=100, stride=25):
+
+def load_dataset_gait(base_path, process="raw", sensors=None, deriv=False, max_pad=100, window_size=100, stride=25):
 
     structure = load_bdd(base_path)
 
@@ -236,6 +246,8 @@ def load_dataset_gait(base_path, process="raw", sensors=None, deriv=False, windo
         None: "LF"
     } 
 
+    skipped = []
+
     for key in structure.keys():
         for cohort in structure[key].keys():
             subjects = structure[key][cohort]
@@ -243,8 +255,12 @@ def load_dataset_gait(base_path, process="raw", sensors=None, deriv=False, windo
                 patient_path, trials = load_patient(base_path, subject) 
                 for trial_name in trials:
                     trial = load_trial(base_path, trial_name)
+                    if align_raw(trial['data_raw'], len(trial['data_processed']), needed=[], max_pad=max_pad) is None:
+                        skipped.append(trial_name)                           
+                        continue
                     if process in ("raw", "free_raw"):
-                        aligned = align_raw(trial['data_raw'], len(trial['data_processed']))
+                        needed = ALL if (sensors is None or any(s not in ALL for s in sensors)) else list(sensors)
+                        aligned = align_raw(trial['data_raw'], len(trial['data_processed']), needed, max_pad=max_pad)
                         if aligned is None:
                             continue                                     
                         trial['data_raw'] = aligned
@@ -358,5 +374,7 @@ def load_dataset_gait(base_path, process="raw", sensors=None, deriv=False, windo
     X_all = np.stack(X_all)
     y_all = np.stack(y_all)
     groups = np.array(groups)
+
+    print(f"Trials descartados: {len(skipped)} {skipped} | sujetos con datos: {len(np.unique(groups))}")   
 
     return X_all, y_all, groups

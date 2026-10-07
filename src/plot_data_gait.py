@@ -410,28 +410,28 @@ def plot_f1_by_cohort(df, title="F1  by cohort", ax=None):
     return stats
 
 def plot_scores_by_sensor_conf(val_scores, test_scores, model_names):
+    from matplotlib.patches import Patch
+
     barwidth = 0.4
     br1 = np.arange(len(val_scores))
     br2 = [x + barwidth for x in br1]
 
     fig = plt.figure(figsize=(16,6))
 
+    plt.rcParams['hatch.color'] = (0.1, 0.1, 0.1, 0.4)  
+
     bar_val = plt.bar(br1, val_scores, width=barwidth, color='deepskyblue', alpha=0.8, label='Val scores')
     bar_test = plt.bar(br2, test_scores, width=barwidth, color='tomato', alpha=0.8, label='Test scores')
+    bar_val[int(np.argmax(val_scores))].set_hatch('//')
+    bar_test[int(np.argmax(test_scores))].set_hatch('//')
     plt.bar_label(bar_val, fmt='%.3f', fontsize=8)
     plt.bar_label(bar_test, fmt='%.3f', fontsize=8)
-
-    global_mean_val = val_scores.mean()
-    global_mean_test = test_scores.mean()
-
-    plt.axhline(global_mean_val, color='darkblue', linestyle='--', alpha=0.4, label=f'Global val mean {global_mean_val:.3f}')
-    plt.axhline(global_mean_test, color='darkred', linestyle='--', alpha=0.4, label=f'Global test mean {global_mean_test:.3f}')
-
     plt.ylim(0.5, 1)
     plt.ylabel('Mean Macro F1', fontsize=12)
     plt.xlabel('Sensor Combination', fontsize=12) 
     plt.xticks([r + barwidth / 2 for r in range(len(val_scores))], model_names, fontsize = 8)
-    plt.legend(loc = 'lower right')
+    max_handle = Patch(facecolor='white', edgecolor='gray', hatch='//', label='Max Val or Test')
+    plt.legend(handles=[bar_val, bar_test, max_handle], loc='lower right')
     plt.title("Validation and test F1 by sensor configuration")
     plt.grid(axis='y', alpha=0.4)
     plt.show()
