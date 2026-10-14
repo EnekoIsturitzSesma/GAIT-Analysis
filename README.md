@@ -1,5 +1,5 @@
 # Deep Learning for Multi-Pathological Gait Event Detection using Minimal Wearable IMUs
-
+---
 This repository contains the code, models and experiments developed for the automatic segmentation of gait events (*Gait Event Detection*: starting and finnishing timestep for the swing phase of each foot) for subjects ranging from healthy to severely pathological walking patterns.
 
 This work proposes an end-to-end **unified Deep Learning model (CNN + BiLSTM)** trained over *RAW* signals, it is optimized for data-scarce configurations (with less sensors) and it is capable of generalizing across multiple clinical conditions, as oposed to more traditional signal processing techniques.
