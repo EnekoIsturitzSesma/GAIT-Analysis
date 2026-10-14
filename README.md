@@ -3,7 +3,7 @@
 This repository contains the code, models and experiments developed for the automatic segmentation of gait events (*Gait Event Detection*: starting and finnishing timestep for the swing phase of each foot) for subjects ranging from healthy to severely pathological walking patterns.
 
 This work proposes an end-to-end **unified Deep Learning model (CNN + BiLSTM)** trained over *RAW* signals, it is optimized for data-scarce configurations (with less sensors) and it is capable of generalizing across multiple clinical conditions, as oposed to more traditional signal processing techniques.
----
+
 
 ## Key Aspects
 
@@ -16,7 +16,7 @@ This work proposes an end-to-end **unified Deep Learning model (CNN + BiLSTM)** 
 Link: https://doi.org/10.6084/m9.figshare.28806086
 
 Voisard, C., Barrois, R., l’Escalopier, N.d. et al. A Dataset of Clinical Gait Signals with Wearable Sensors from Healthy, Neurological, and Orthopedic Cohorts. Sci Data 12, 1674 (2025). https://doi.org/10.1038/s41597-025-05959-w
----
+
 
 ## Repository Structure
 
