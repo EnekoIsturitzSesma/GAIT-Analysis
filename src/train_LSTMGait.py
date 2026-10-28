@@ -4,6 +4,8 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import f1_score
+from scipy.optimize import linear_sum_assignment
+
 from tqdm import tqdm
 import gc
 import json
@@ -15,8 +17,9 @@ import copy
 
 sys.path.append(os.path.abspath(os.path.join('..')))
 
-from models.LSTMGait import LSTMGait, CNNBiLSTMGait
+from models.LSTMGait import LSTMGait, CNNBiLSTMGait, CNN
 from src.load_data_gait import load_trial, align_raw
+from src.plot_data_gait import find_intervals
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -146,46 +149,61 @@ def training_loop(model, train_dl, val_dl, num_classes, epochs=100, lr=0.0005, p
 
 
 
-def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, patience=20, dropout=0.25, cnn_channels=64, kernel_size=5, hidden_size=128, num_layers=2, batch_size=128, out_dir="checkpoints", plot=False):
-    np.random.seed(42)
-    torch.manual_seed(42)
+def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, patience=20, dropout=0.25, cnn_channels=64, kernel_size=5, hidden_size=128, num_layers=2, batch_size=128, split=None, seed=42, out_dir="checkpoints", plot=False):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
     os.makedirs(out_dir, exist_ok=True)
 
     num_channels = X.shape[-1]
     num_classes  = len(np.unique(y))
 
-    unique_subjects = np.unique(subjects)
-    gss_test = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
-    trainval_subj_idx, test_subj_idx = next(gss_test.split(unique_subjects, groups=unique_subjects))
+    if split is None:
+        unique_subjects = np.unique(subjects)
+        gss_test = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
+        trainval_subj_idx, test_subj_idx = next(gss_test.split(unique_subjects, groups=unique_subjects))
 
-    trainval_subjects = set(unique_subjects[trainval_subj_idx])
-    test_subjects     = set(unique_subjects[test_subj_idx])
+        trainval_subjects = set(unique_subjects[trainval_subj_idx])
+        test_subjects     = set(unique_subjects[test_subj_idx])
 
-    trainval_mask = np.isin(subjects, list(trainval_subjects))
-    test_mask     = np.isin(subjects, list(test_subjects))
+        trainval_mask = np.isin(subjects, list(trainval_subjects))
+        test_mask     = np.isin(subjects, list(test_subjects))
 
-    X_trainval, y_trainval = X[trainval_mask], y[trainval_mask]
-    X_test,     y_test     = X[test_mask],     y[test_mask]
-    subjects_trainval      = subjects[trainval_mask]
-    subjects_test          = subjects[test_mask] 
+        X_trainval, y_trainval = X[trainval_mask], y[trainval_mask]
+        X_test,     y_test     = X[test_mask],     y[test_mask]
+        subjects_trainval      = subjects[trainval_mask]
+        subjects_test          = subjects[test_mask] 
 
-    print(f"Subject split  →  train+val: {len(trainval_subjects)} subjects  |  test: {len(test_subjects)} subjects")
-    print(f"Window split   →  train+val: {X_trainval.shape[0]}  |  test: {X_test.shape[0]}")
+        print(f"Subject split  →  train+val: {len(trainval_subjects)} subjects  |  test: {len(test_subjects)} subjects")
+        print(f"Window split   →  train+val: {X_trainval.shape[0]}  |  test: {X_test.shape[0]}")
 
-    unique_trainval_subjects = np.unique(subjects_trainval)
-    gss_val = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
-    train_subj_idx, val_subj_idx = next(gss_val.split(unique_trainval_subjects, groups=unique_trainval_subjects))
+        unique_trainval_subjects = np.unique(subjects_trainval)
+        gss_val = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
+        train_subj_idx, val_subj_idx = next(gss_val.split(unique_trainval_subjects, groups=unique_trainval_subjects))
 
-    train_subjects = set(unique_trainval_subjects[train_subj_idx])
-    val_subjects   = set(unique_trainval_subjects[val_subj_idx])
+        train_subjects = set(unique_trainval_subjects[train_subj_idx])
+        val_subjects   = set(unique_trainval_subjects[val_subj_idx])
 
-    train_mask = np.isin(subjects_trainval, list(train_subjects))
-    val_mask   = np.isin(subjects_trainval, list(val_subjects))
+        train_mask = np.isin(subjects_trainval, list(train_subjects))
+        val_mask   = np.isin(subjects_trainval, list(val_subjects))
 
-    X_train, y_train = X_trainval[train_mask], y_trainval[train_mask]
-    X_val,   y_val   = X_trainval[val_mask],   y_trainval[val_mask]
-    subjects_val      = subjects_trainval[val_mask]  
+        X_train, y_train = X_trainval[train_mask], y_trainval[train_mask]
+        X_val,   y_val   = X_trainval[val_mask],   y_trainval[val_mask]
+        subjects_val      = subjects_trainval[val_mask]  
+    else:
+        train_subjects = set(split['train'])
+        val_subjects   = set(split['val'])
+        test_subjects  = set(split['test'])
+
+        train_mask = np.isin(subjects, list(train_subjects))
+        val_mask   = np.isin(subjects, list(val_subjects))
+        test_mask  = np.isin(subjects, list(test_subjects))
+
+        X_train, y_train = X[train_mask], y[train_mask]
+        X_val,   y_val   = X[val_mask],   y[val_mask]
+        X_test,  y_test  = X[test_mask],  y[test_mask]
+        subjects_val      = subjects[val_mask]  
+        subjects_test     = subjects[test_mask]
 
     print(f"               →  train: {len(train_subjects)} subjects ({X_train.shape[0]} windows)"
           f"  |  val: {len(val_subjects)} subjects ({X_val.shape[0]} windows)")
@@ -202,13 +220,17 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
         X_test  = normalize_per_window(X_test)
 
     g = torch.Generator()
-    g.manual_seed(42)
+    g.manual_seed(seed)
     train_dl = DataLoader(LSTMGaitDataset(X_train, y_train), batch_size=batch_size, shuffle=True,  generator=g)
     val_dl   = DataLoader(LSTMGaitDataset(X_val,   y_val),   batch_size=batch_size, shuffle=False)
     test_dl  = DataLoader(LSTMGaitDataset(X_test,  y_test),  batch_size=batch_size, shuffle=False)
 
     if model_name.lower() == "lstm":
         model = LSTMGait(num_channels, num_classes, hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout)
+    elif model_name.lower() == "bilstm":
+        model = LSTMGait(num_channels, num_classes, hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout, bidirectional=True)
+    elif model_name.lower() == "cnn":
+        model = CNN(num_channels, num_classes, cnn_channels=cnn_channels, kernel_size=kernel_size, dropout_rate=dropout)
     elif model_name.lower() == "cnnbilstm":
         model = CNNBiLSTMGait(num_channels, num_classes, cnn_channels=cnn_channels, kernel_size=kernel_size, hidden_size=hidden_size, num_layers=num_layers, dropout_rate=dropout)
     else:
@@ -269,6 +291,7 @@ def train_model(X, y, subjects, model_name, norm="subj", epochs=100, lr=0.0003, 
         'num_layers':       num_layers,
         'num_channels':     num_channels,
         'num_classes':      num_classes,
+        'dropout':          dropout,
         'train_subjects':   sorted(train_subjects),
         'val_subjects':     sorted(val_subjects),
         'test_subjects':    sorted(test_subjects),
@@ -320,7 +343,7 @@ def load_model(subject=None, model_name=None, out_dir="checkpoints/processed"):
             ckpt['num_classes'],
             hidden_size=ckpt['hidden_size'],
             num_layers=ckpt['num_layers'],
-            dropout_rate=0.25
+            dropout_rate=ckpt['dropout']
         )
 
     elif model_name.lower() == "cnnbilstm":
@@ -331,7 +354,26 @@ def load_model(subject=None, model_name=None, out_dir="checkpoints/processed"):
             kernel_size=ckpt['kernel_size'],
             hidden_size=ckpt['hidden_size'],
             num_layers=ckpt['num_layers'],
-            dropout_rate=0.25
+            dropout_rate=ckpt['dropout']
+        )
+
+    elif model_name.lower() == "cnn":
+        model = CNN(
+            ckpt['num_channels'],
+            ckpt['num_classes'],
+            cnn_channels=ckpt['cnn_channels'],
+            kernel_size=ckpt['kernel_size'],
+            dropout_rate=ckpt['dropout']
+        )
+
+    elif model_name.lower() == "bilstm":
+        model = LSTMGait(
+            ckpt['num_channels'],
+            ckpt['num_classes'],
+            hidden_size=ckpt['hidden_size'],
+            num_layers=ckpt['num_layers'],
+            dropout_rate=ckpt['dropout'],
+            bidirectional=True
         )
 
     model.load_state_dict(ckpt['state_dict'])
@@ -496,3 +538,41 @@ def predict_trial(base_path, trial_name, subject, model_name, process="preproces
         y_pred[last_valid:] = y_pred[last_valid - 1]
 
     return y_pred, y_true, X_clean_df
+
+
+def swing_events(y, cls):
+    iv = find_intervals(y, cls)                             
+    return np.array([a for a, b in iv]), np.array([b for a, b in iv])
+
+
+def match_events(ref, pred, tol):
+    if len(ref) == 0 or len(pred) == 0:
+        return 0, len(pred), len(ref), np.array([])
+    cost = np.abs(ref[:, None] - pred[None, :]).astype(float)
+    cost[cost > tol] = 1e6                                 
+    r, p = linear_sum_assignment(cost)
+    ok = cost[r, p] <= tol
+    tp = int(ok.sum())
+    return tp, len(pred) - tp, len(ref) - tp, cost[r[ok], p[ok]]
+
+
+def evaluate_events(y_true, y_pred, freq=100, tol_frac=0.2, tol_ms=None):
+    out = {"TO": [0, 0, 0, []], "HS": [0, 0, 0, []]}
+    for cls in (1, 2):                                       
+        to_r, hs_r = swing_events(y_true, cls)
+        to_p, hs_p = swing_events(y_pred, cls)
+        stride = np.median(np.diff(to_r)) if len(to_r) > 1 else 1.1 * freq
+        tol = tol_ms * freq / 1000 if tol_ms else tol_frac * stride
+        for name, r, p in (("TO", to_r, to_p), ("HS", hs_r, hs_p)):
+            tp, fp, fn, e = match_events(r, p, tol)
+            o = out[name]; o[0] += tp; o[1] += fp; o[2] += fn; o[3] += list(e * 1000 / freq)
+    return out
+
+
+def summarize(results):                                      
+    for name in ("TO", "HS"):
+        tp = sum(r[name][0] for r in results); fp = sum(r[name][1] for r in results); fn = sum(r[name][2] for r in results)
+        err = np.array(sum((r[name][3] for r in results), []))
+        P = tp / max(tp + fp, 1); R = tp / max(tp + fn, 1); F1 = 2 * P * R / max(P + R, 1e-9)
+        q = np.percentile(err, [25, 75]) if len(err) else [np.nan, np.nan]
+        print(f"{name}: F1={F1:.3f} P={P:.3f} R={R:.3f} | error mediano {np.median(err):.0f} ms [IQR {q[0]:.0f}-{q[1]:.0f}]")

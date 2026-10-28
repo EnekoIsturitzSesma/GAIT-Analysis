@@ -435,3 +435,5 @@ def plot_scores_by_sensor_conf(val_scores, test_scores, model_names):
     plt.title("Validation and test F1 by sensor configuration")
     plt.grid(axis='y', alpha=0.4)
     plt.show()
+
+
